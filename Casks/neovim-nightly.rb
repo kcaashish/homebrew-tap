@@ -7,9 +7,5 @@ cask 'neovim-nightly' do
     desc 'Nightly build of the Neovim text editor'
     homepage 'https://neovim.io/'
 
-    binary 'nvim-macos/bin/nvim', target: 'nvim'
-
-    preflight do
-      system_command 'xattr', args: ['-c', "#{staged_path}/nvim-macos.tar.gz"]
-    end
+    binary 'nvim-macos/bin/nvim'
   end
