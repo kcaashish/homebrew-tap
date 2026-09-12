@@ -1,0 +1,4 @@
+# Ruby LSP's auto-generated custom bundle
+.ruby-lsp/
+
+.DS_Store

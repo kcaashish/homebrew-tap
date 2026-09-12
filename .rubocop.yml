@@ -1,0 +1,50 @@
+# Config for editor tooling (the `rubocop` LSP / `conform` formatter) only.
+#
+# Casks are Homebrew DSL files, not ordinary Ruby source, so a stock RuboCop
+# flags things Homebrew deliberately allows. This mirrors the cask-related
+# parts of Homebrew's own config (`$(brew --repository)/Library/.rubocop.yml`).
+#
+# The authoritative linter is still `brew style --cask kcaashish/tap`, which
+# additionally loads Homebrew's custom `Cask/*` cops.
+---
+AllCops:
+  NewCops: disable
+  SuggestExtensions: false
+
+# Cask filenames are tokens, so dashes and `@` are expected.
+Naming/FileName:
+  Regex: !ruby/regexp /^[\w\@\-\+\.]+(\.rb)?$/
+
+# Not used for casks and formulae.
+Style/FrozenStringLiteralComment:
+  Exclude:
+    - "Casks/**/*.rb"
+    - "Formula/**/*.rb"
+
+# These metrics didn't end up helping.
+Metrics:
+  Enabled: false
+
+# GitHub diff UI wraps beyond 118 characters.
+Layout/LineLength:
+  Max: 118
+
+# Conflicts with DSL-style path concatenation with `/`.
+Layout/SpaceAroundOperators:
+  Enabled: false
+
+# Makes DSL usage ugly.
+Layout/SpaceBeforeBrackets:
+  Exclude:
+    - "Casks/**/*.rb"
+    - "Formula/**/*.rb"
+
+# Favour parens-less DSL-style arguments.
+Lint/AmbiguousBlockAssociation:
+  Enabled: false
+
+Style/StringLiterals:
+  EnforcedStyle: double_quotes
+
+Style/StringLiteralsInInterpolation:
+  EnforcedStyle: double_quotes

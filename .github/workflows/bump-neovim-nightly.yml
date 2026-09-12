@@ -1,0 +1,63 @@
+name: Bump neovim-nightly
+
+on:
+  schedule:
+    # Neovim publishes the nightly build around 05:20 UTC.
+    - cron: "30 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bump-neovim-nightly
+
+jobs:
+  bump:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Link the checkout as a tap
+        run: |
+          taps="$(brew --repository)/Library/Taps/kcaashish"
+          mkdir -p "$taps"
+          ln -sfn "$GITHUB_WORKSPACE" "$taps/homebrew-tap"
+
+      - name: Check for a newer nightly
+        id: livecheck
+        env:
+          HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HOMEBREW_NO_ANALYTICS: 1
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          latest="$(brew livecheck --cask --json --newer-only kcaashish/tap/neovim-nightly \
+            | jq -r '.[0].version.latest // empty')"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+          if [ -z "${latest}" ]; then echo "Already on the newest nightly."; fi
+
+      - name: Bump the version stanza
+        if: steps.livecheck.outputs.latest != ''
+        env:
+          LATEST: ${{ steps.livecheck.outputs.latest }}
+          HOMEBREW_NO_ANALYTICS: 1
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: |
+          sed -i '' -E "s/^  version \".*\"\$/  version \"${LATEST}\"/" Casks/neovim-nightly.rb
+          if git diff --quiet Casks/neovim-nightly.rb; then
+            echo "::error::version stanza did not change"
+            exit 1
+          fi
+          brew info --cask kcaashish/tap/neovim-nightly
+
+      - name: Commit and push
+        if: steps.livecheck.outputs.latest != ''
+        env:
+          LATEST: ${{ steps.livecheck.outputs.latest }}
+        run: |
+          # Author as the Actions bot: that email is not attached to a GitHub
+          # account, so these commits stay off the contribution graph.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "neovim-nightly ${LATEST}"
+          git push
