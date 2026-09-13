@@ -2,8 +2,11 @@ name: Bump neovim-nightly
 
 on:
   schedule:
-    # Neovim publishes the nightly build around 05:20 UTC.
-    - cron: "30 6 * * *"
+    # Neovim publishes the nightly build around 05:20 UTC. The odd minute well
+    # off the hour is deliberate: GitHub queues scheduled runs best effort and
+    # delays them most at :00 and :30. At "30 6" this fired 4h39m late one day
+    # and had not fired at all 5 minutes past the next, so keep it off the mark.
+    - cron: "17 7 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
