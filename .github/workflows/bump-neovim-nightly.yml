@@ -26,9 +26,15 @@ jobs:
       # Runner images pin Homebrew to whatever shipped when the image was built
       # (6.0.18 as of this writing). The cask's `postflight_steps` block uses the
       # `{{arch}}` install-step token, which landed after 6.0.22 and is in no
-      # tagged release yet, so the pinned brew cannot even read the cask. Anyone
-      # who runs `brew update` tracks main and has it; the runner has to be told.
+      # tagged release yet, so the pinned brew cannot even read the cask.
+      #
+      # A plain `brew update` is not enough: it sets HOMEBREW_UPDATE_TO_TAG and
+      # checks out the newest tag, which is the version missing the token.
+      # Developer mode takes the branch path instead and lands on main, which is
+      # also where livecheck (a developer command) leaves a local install.
       - name: Update Homebrew
+        env:
+          HOMEBREW_DEVELOPER: 1
         run: brew update
 
       - name: Link the checkout as a tap
