@@ -7,10 +7,17 @@ on:
     # delays them most at :00 and :30. At "30 6" this fired 4h39m late one day
     # and had not fired at all 5 minutes past the next, so keep it off the mark.
     - cron: "17 7 * * *"
+  # A hand-edited cask gets its release published straight away. Pushes made
+  # with this workflow's own token never trigger runs, so bumps do not loop.
+  push:
+    branches: [main]
+    paths:
+      - Casks/neovim-nightly.rb
+      - .github/workflows/bump-neovim-nightly.yml
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Bump the version stanza but do not push the commit"
+        description: "Stage the bump but do not publish a release or push the commit"
         type: boolean
         default: false
 
@@ -20,9 +27,21 @@ permissions:
 concurrency:
   group: bump-neovim-nightly
 
+defaults:
+  run:
+    # Explicitly naming bash adds `-o pipefail`; the implicit default does not.
+    shell: bash
+
 jobs:
   bump:
     runs-on: macos-latest
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      HOMEBREW_NO_ANALYTICS: 1
+      # Dispatching from a branch is a dry run by construction, so the whole
+      # bump can be exercised without publishing a release or moving `main`.
+      PUBLISH: ${{ github.ref == 'refs/heads/main' && inputs.dry_run != true }}
     steps:
       - uses: actions/checkout@v5
 
@@ -46,52 +65,154 @@ jobs:
           mkdir -p "$taps"
           ln -sfn "$GITHUB_WORKSPACE" "$taps/homebrew-tap"
 
-      - name: Check for a newer nightly
+      - name: Find the newest nightly
         id: livecheck
         env:
           HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_NO_ANALYTICS: 1
           HOMEBREW_NO_AUTO_UPDATE: 1
         run: |
-          # Without `pipefail` the exit status below is jq's, so a livecheck that
-          # dies still leaves `latest` empty, which reads as "no new nightly" and
-          # keeps the job green. Prove the cask is readable first, then require
-          # livecheck itself to succeed and to hand back JSON.
-          set -o pipefail
-
+          # A livecheck that dies must not read as "nothing new" and keep the job
+          # green. Prove the cask is readable first, then require livecheck to
+          # succeed and to name a version.
           brew info --cask kcaashish/tap/neovim-nightly > /dev/null
 
-          json="$(brew livecheck --cask --json --newer-only kcaashish/tap/neovim-nightly)"
-          if ! jq -e 'type == "array"' > /dev/null <<< "$json"; then
-            echo "::error::brew livecheck did not return a JSON array:"
+          # On failure livecheck still prints JSON, with the reason inside it.
+          if ! json="$(brew livecheck --cask --json kcaashish/tap/neovim-nightly)" ||
+            ! latest="$(jq -er '.[0].version.latest' <<< "$json")"; then
+            echo "::error::brew livecheck did not report a version:"
             echo "$json"
             exit 1
           fi
 
-          latest="$(jq -r '.[0].version.latest // empty' <<< "$json")"
-          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
-          if [ -z "${latest}" ]; then echo "Already on the newest nightly."; fi
+          # The version ends up in a sed expression and a tag name, so hold it
+          # to the shape the livecheck block produces.
+          if ! [[ "$latest" =~ ^[0-9]+(\.[0-9]+)+-dev-[0-9]+-g[0-9a-f]+$ ]]; then
+            echo "::error::unexpected nightly version: ${latest}"
+            exit 1
+          fi
 
-      - name: Bump the version stanza
-        if: steps.livecheck.outputs.latest != ''
+          echo "Newest nightly: ${latest}"
+          echo "latest=${latest}" >> "$GITHUB_OUTPUT"
+
+      # The cask downloads from a release on this repo, never from Neovim's
+      # `nightly` release, whose files are replaced every night. Each copy is
+      # checked against the SHA-256 GitHub reports for Neovim's upload before it
+      # is published, and published before the cask points at it.
+      - name: Publish the release
+        id: release
         env:
           LATEST: ${{ steps.livecheck.outputs.latest }}
-          HOMEBREW_NO_ANALYTICS: 1
+        run: |
+          tag="neovim-nightly-${LATEST}"
+          assets=(nvim-macos-arm64.tar.gz nvim-macos-x86_64.tar.gz)
+
+          # A published release is reused as is: by every run until Neovim moves
+          # on, and by a rerun after a push that failed.
+          if json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${tag}" 2> /dev/null)"; then
+            echo "Release ${tag} already exists."
+            exists=true
+          else
+            exists=false
+            json="$(gh api repos/neovim/neovim/releases/tags/nightly)"
+
+            # Livecheck read an earlier response; Neovim may have moved on since.
+            build="NVIM v${LATEST%-g*}+g${LATEST##*-g}"
+            if ! jq -e --arg build "$build" '.body | contains($build)' > /dev/null <<< "$json"; then
+              echo "::error::Neovim's nightly release is no longer ${build}"
+              exit 1
+            fi
+
+            downloads="${RUNNER_TEMP}/neovim-nightly"
+            mkdir -p "$downloads"
+            patterns=()
+            files=()
+            for asset in "${assets[@]}"; do
+              patterns+=(--pattern "$asset")
+              files+=("${downloads}/${asset}")
+            done
+            gh release download nightly --repo neovim/neovim --dir "$downloads" "${patterns[@]}"
+          fi
+
+          for asset in "${assets[@]}"; do
+            if ! digest="$(jq -er --arg name "$asset" \
+              '.assets[] | select(.name == $name) | .digest | select(startswith("sha256:")) | ltrimstr("sha256:")' \
+              <<< "$json")"; then
+              echo "::error::no SHA-256 digest for ${asset} in the release"
+              exit 1
+            fi
+
+            if [ "$exists" = false ]; then
+              actual="$(shasum -a 256 "${downloads}/${asset}" | cut -d " " -f 1)"
+              if [ "$actual" != "$digest" ]; then
+                echo "::error::${asset} is ${actual}, but Neovim's release says ${digest}"
+                exit 1
+              fi
+            fi
+
+            echo "${asset}: ${digest}"
+            case "$asset" in
+              *arm64*) echo "arm=${digest}" >> "$GITHUB_OUTPUT" ;;
+              *x86_64*) echo "intel=${digest}" >> "$GITHUB_OUTPUT" ;;
+            esac
+          done
+
+          if [ "$exists" = true ]; then exit 0; fi
+          if [ "$PUBLISH" != true ]; then
+            echo "::notice::Dry run on ${GITHUB_REF}: not publishing release ${tag}"
+            exit 0
+          fi
+
+          notes="Neovim nightly \`${build}\` (neovim/neovim@${LATEST##*-g}), copied unchanged"
+          notes+=" from https://github.com/neovim/neovim/releases/tag/nightly for the neovim-nightly cask."
+          gh release create "$tag" "${files[@]}" \
+            --prerelease \
+            --target "$GITHUB_SHA" \
+            --title "neovim-nightly ${LATEST}" \
+            --notes "$notes"
+
+      - name: Point the cask at the release
+        env:
+          LATEST: ${{ steps.livecheck.outputs.latest }}
+          ARM_SHA256: ${{ steps.release.outputs.arm }}
+          INTEL_SHA256: ${{ steps.release.outputs.intel }}
           HOMEBREW_NO_AUTO_UPDATE: 1
         run: |
-          sed -i '' -E "s/^  version \".*\"\$/  version \"${LATEST}\"/" Casks/neovim-nightly.rb
-          if git diff --quiet Casks/neovim-nightly.rb; then
-            echo "::error::version stanza did not change"
-            exit 1
+          cask=Casks/neovim-nightly.rb
+          sed -i '' -E \
+            -e "s/^  version \".*\"\$/  version \"${LATEST}\"/" \
+            -e "s/^  sha256 arm:   \"[0-9a-f]*\",\$/  sha256 arm:   \"${ARM_SHA256}\",/" \
+            -e "s/^         intel: \"[0-9a-f]*\"\$/         intel: \"${INTEL_SHA256}\"/" \
+            "$cask"
+
+          # sed stays quiet when a pattern stops matching, so check the result.
+          for stanza in "version \"${LATEST}\"" "arm:   \"${ARM_SHA256}\"" "intel: \"${INTEL_SHA256}\""; do
+            if ! grep -qF "$stanza" "$cask"; then
+              echo "::error::${cask} does not contain ${stanza}"
+              exit 1
+            fi
+          done
+
+          if git diff --quiet "$cask"; then
+            echo "The cask already points at neovim-nightly ${LATEST}."
+          else
+            git --no-pager diff "$cask"
           fi
           brew info --cask kcaashish/tap/neovim-nightly
 
+      # Downloads both architectures through the cask itself, which proves the
+      # URLs resolve and the files match the checksums about to be pushed.
+      - name: Fetch the cask
+        if: env.PUBLISH == 'true'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+        run: brew fetch --cask --arch=all --force kcaashish/tap/neovim-nightly
+
       - name: Commit and push
-        if: steps.livecheck.outputs.latest != ''
         env:
           LATEST: ${{ steps.livecheck.outputs.latest }}
-          DRY_RUN: ${{ inputs.dry_run }}
         run: |
+          if git diff --quiet; then exit 0; fi
+
           # Author as the Actions bot: that email is not attached to a GitHub
           # account, so these commits stay off the contribution graph.
           git config user.name "github-actions[bot]"
@@ -99,14 +220,23 @@ jobs:
           git commit -am "neovim-nightly ${LATEST}"
           git --no-pager show --stat HEAD
 
-          if [ "${DRY_RUN}" = "true" ]; then
-            echo "::notice::Dry run requested: not pushing neovim-nightly ${LATEST}"
-            exit 0
-          fi
-          # Dispatching from a branch is then a dry run by construction, so the
-          # whole bump can be exercised without moving `main`.
-          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
-            echo "::notice::Not on main (${GITHUB_REF}): not pushing neovim-nightly ${LATEST}"
+          if [ "$PUBLISH" != true ]; then
+            echo "::notice::Dry run on ${GITHUB_REF}: not pushing neovim-nightly ${LATEST}"
             exit 0
           fi
           git push
+
+      # The cask only needs the newest release. The two before it cover a tap
+      # that is a bump or two behind when Homebrew downloads.
+      - name: Delete old releases
+        if: env.PUBLISH == 'true'
+        env:
+          LATEST: ${{ steps.livecheck.outputs.latest }}
+        run: |
+          gh release list --limit 100 --json tagName,createdAt --jq '
+            map(select(.tagName | startswith("neovim-nightly-")))
+            | sort_by(.createdAt) | reverse | .[3:] | .[].tagName
+          ' | while read -r tag; do
+            if [ "$tag" = "neovim-nightly-${LATEST}" ]; then continue; fi
+            gh release delete "$tag" --yes --cleanup-tag < /dev/null
+          done

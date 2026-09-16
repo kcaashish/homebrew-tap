@@ -25,9 +25,11 @@ Style/FrozenStringLiteralComment:
 Metrics:
   Enabled: false
 
-# GitHub diff UI wraps beyond 118 characters.
+# GitHub diff UI wraps beyond 118 characters. Long single-line URLs are exempt.
 Layout/LineLength:
   Max: 118
+  AllowedPatterns:
+    - ' url "'
 
 # Conflicts with DSL-style path concatenation with `/`.
 Layout/SpaceAroundOperators:
