@@ -1,9 +1,9 @@
 cask "neovim-nightly" do
   arch arm: "arm64", intel: "x86_64"
 
-  version "0.13.0-dev-1721-g7dbca1c4e2"
-  sha256 arm:   "32884ef265df33a07224370e0f44df92f3b672edb315f9c751da99a13b5cf2cd",
-         intel: "b2fe116bd924a6d52b3aafc92bfd70d5f56f859d400b768d4399712a97e5b9f4"
+  version "0.13.0-dev-1738-g521eddec7c"
+  sha256 arm:   "642bdce3c533f6117f94fbf4877fd3b17f05c771e157dff152114e8cb4995563",
+         intel: "f43e93b0e4f71a06979dc3b7d441afb47843dbbf4aa5d44cac436ae8f0c78f28"
 
   # Neovim deletes and recreates its `nightly` release every night, so the files
   # behind its download URLs change daily and cannot be pinned to a checksum.
