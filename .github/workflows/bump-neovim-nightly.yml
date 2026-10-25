@@ -59,11 +59,15 @@ jobs:
           HOMEBREW_DEVELOPER: 1
         run: brew update
 
+      # Homebrew refuses to load casks from a third-party tap until it is
+      # trusted. Naming the cask on the command line only counts as trust for
+      # `install`, `reinstall` and `upgrade`, not for `info` or `livecheck`.
       - name: Link the checkout as a tap
         run: |
           taps="$(brew --repository)/Library/Taps/kcaashish"
           mkdir -p "$taps"
           ln -sfn "$GITHUB_WORKSPACE" "$taps/homebrew-tap"
+          brew trust kcaashish/tap
 
       - name: Find the newest nightly
         id: livecheck
